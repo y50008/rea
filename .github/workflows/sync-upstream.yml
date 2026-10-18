@@ -2,29 +2,32 @@ name: Sync Upstream
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
+  workflows: write
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout fork
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Set up git
+
+      - name: Configure git
         run: |
-          git config user.name "y50008"
-          git config user.email "y50008@users.noreply.github.com"
-      - name: Fetch upstream
-        run: git remote add upstream https://github.com/morluto/rea.git && git fetch upstream
-      - name: Merge upstream main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream and push
+        env:
+          GITHUB_TOKEN: ${ secrets.GITHUB_TOKEN }
         run: |
-          git checkout main
-          git merge --ff-only upstream/main || echo "::warning::Fast-forward failed, manual sync needed"
-      - name: Push
-        run: git push origin main
+          git remote add upstream https://github.com/morluto/rea.git
+          git fetch upstream main
+          git merge upstream/main --no-edit
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" main
