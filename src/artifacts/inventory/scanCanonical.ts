@@ -1,4 +1,5 @@
 import type { ArtifactInventorySnapshot } from "../../domain/artifactInventorySnapshot.js";
+import type { ArtifactEmbeddedFormatProbeFacts } from "../ArtifactEmbeddedFormatProbes.js";
 import { compareUnicodeCodePoints } from "../../domain/unicodeCodePointOrder.js";
 
 import { AsarArtifactReader } from "../AsarArtifactReader.js";
@@ -67,16 +68,18 @@ export const scanCanonicalArtifactInventoryInScope = async (
 export const scanCanonicalArtifactInventoryForExtractionInScope = async (
   path: string,
   options: ArtifactInventoryOptions,
+  probeFacts?: ArtifactEmbeddedFormatProbeFacts,
 ): Promise<{
   readonly snapshot: ArtifactInventorySnapshot;
   readonly zipSource: TransferredZipInventorySource | undefined;
-}> => scanCanonical(path, options, createReader, "transfer-zip");
+}> => scanCanonical(path, options, createReader, "transfer-zip", probeFacts);
 
 const scanCanonical = async (
   path: string,
   options: ArtifactInventoryOptions,
   readerFactory: typeof createReader,
   rootDisposition: "release" | "transfer-zip",
+  probeFacts?: ArtifactEmbeddedFormatProbeFacts,
 ): Promise<{
   readonly snapshot: ArtifactInventorySnapshot;
   readonly zipSource: TransferredZipInventorySource | undefined;
@@ -87,11 +90,13 @@ const scanCanonical = async (
     format: rootFormat,
     digest: rootDigest,
     rootSource,
+    readerAdmission,
   } = await classifyAndHashRootForInventory(
     path,
     metadata.isDirectory(),
     metadata,
     options,
+    probeFacts,
   );
   let reader: ArtifactReader | undefined;
   let readerCreationFailure: { readonly cause: unknown } | undefined;
@@ -100,7 +105,7 @@ const scanCanonical = async (
       path,
       rootFormat,
       options.environment ?? {},
-      rootSource,
+      readerAdmission,
       options.asarHeaderAdmission,
     );
   } catch (cause: unknown) {
@@ -201,6 +206,7 @@ const scanCanonical = async (
                   ),
             cleanup: cause.cleanup,
             cleanupLeases: cause.cleanupLeases,
+            userMessage: cause.userMessage,
             ...(retained === undefined
               ? {}
               : {

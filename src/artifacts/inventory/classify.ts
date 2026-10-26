@@ -1,14 +1,17 @@
+import type { NodeSeaAdmission } from "../nodeSea/NodeSeaAdmission.js";
 import type { AsarHeaderAdmission } from "../../config/asarHeaderAdmission.js";
-import { locateGodotPck } from "../GodotPckLocation.js";
+import {
+  ArtifactEmbeddedFormatProbes,
+  type ArtifactEmbeddedFormatProbeFacts,
+} from "../ArtifactEmbeddedFormatProbes.js";
 import { sameRegularFileState } from "../../filesystem/RegularFile.js";
 import type { FileHandle } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import type { StableRegularFileDescriptor } from "../../filesystem/RegularFile.js";
 import type { OwnedFileHandle } from "../../filesystem/OwnedFileHandle.js";
 
-import { containsPyInstallerArchive } from "../pyinstaller/CArchiveLayout.js";
 import { decodeNodeSeaBlob } from "../nodeSea/NodeSeaBlob.js";
-import { locateNodeSea, readNodeSeaBlob } from "../nodeSea/NodeSeaLocation.js";
+import { readNodeSeaBlob } from "../nodeSea/NodeSeaLocation.js";
 import { classifyArtifactContent } from "./ArtifactGraphConstruction.js";
 import { abortIfNeeded } from "../ArtifactHash.js";
 import { claimsExecutableHeader } from "../../domain/binaryTarget.js";
@@ -21,11 +24,11 @@ import {
   zipRootPackageFormat,
 } from "../../domain/zipPackageFormat.js";
 import { ArtifactReaderFailure } from "../ArtifactReader.js";
-import type { ArtifactResourceOwner } from "../ArtifactResourceScope.js";
 import type { HashResult } from "../ArtifactHash.js";
 import {
   hashStableRootArtifactHandle,
   openRootArtifact,
+  releaseRootArtifact,
 } from "./hashStableRootArtifact.js";
 import type { ArtifactInventoryOptions } from "./types.js";
 import { readMachoHeaderPrefixFacts } from "../../domain/apple/machoContainer.js";
@@ -43,6 +46,10 @@ interface RootClassification {
 
 type RootInventoryClassification = RootClassification & {
   readonly rootSource: RootInventorySource | undefined;
+  readonly readerAdmission:
+    | StableRegularFileDescriptor
+    | NodeSeaAdmission
+    | undefined;
 };
 
 /** The admitted descriptor and the single owner that can confirm its close. */
@@ -50,7 +57,7 @@ export interface RootInventorySource extends StableRegularFileDescriptor {
   readonly owner: OwnedFileHandle;
 }
 
-/** Classify a root and retain its admitted ZIP descriptor for child inventory. */
+/** Classify a root and retain its admitted source and format facts for child inventory. */
 export const classifyAndHashRootForInventory = async (
   path: string,
   directory: boolean,
@@ -59,20 +66,28 @@ export const classifyAndHashRootForInventory = async (
     ArtifactInventoryOptions,
     "resourceScope" | "signal" | "asarHeaderAdmission"
   >,
+  probeFacts?: ArtifactEmbeddedFormatProbeFacts,
 ): Promise<RootInventoryClassification> => {
+  if (directory && probeFacts !== undefined) {
+    abortIfNeeded(options.signal);
+    throw new ArtifactReaderFailure(
+      "integrity",
+      `Root artifact changed before inventory: ${path}`,
+    );
+  }
   if (directory)
-    return { format: "directory", digest: null, rootSource: undefined };
+    return {
+      format: "directory",
+      digest: null,
+      rootSource: undefined,
+      readerAdmission: undefined,
+    };
   const source = await openRootArtifact(
     path,
     options.resourceScope,
     options.signal,
   );
   const { handle, initial } = source;
-  const owner: ArtifactResourceOwner = {
-    kind: "file-handle",
-    handle: source.owner,
-    resource: `root artifact descriptor for ${path}`,
-  };
   let outcome:
     | {
         readonly kind: "completed";
@@ -85,12 +100,20 @@ export const classifyAndHashRootForInventory = async (
         "integrity",
         `Root artifact changed before inventory: ${path}`,
       );
-    const format = await classifyRootFormat(
+    const classified = await classifyRootFormat(
       path,
-      handle,
+      source,
+      new ArtifactEmbeddedFormatProbes(
+        path,
+        source,
+        options.signal,
+        probeFacts,
+      ),
       options.signal,
       options.asarHeaderAdmission,
     );
+    const format =
+      typeof classified === "string" ? classified : classified.kind;
     const digest = await hashStableRootArtifactHandle(
       path,
       handle,
@@ -109,15 +132,27 @@ export const classifyAndHashRootForInventory = async (
         format,
         digest,
         rootSource: retainSource ? source : undefined,
+        readerAdmission:
+          typeof classified !== "string"
+            ? classified
+            : retainSource
+              ? source
+              : undefined,
       },
     };
   } catch (cause: unknown) {
     outcome = { kind: "failed", cause };
   }
   if (outcome.kind === "failed" || outcome.value.rootSource === undefined) {
-    const cleanupAttempt = await options.resourceScope.release(owner);
-    if (cleanupAttempt.kind === "failed")
-      throw options.resourceScope.cleanupFailure(outcome, [cleanupAttempt]);
+    await releaseRootArtifact(
+      path,
+      source.owner,
+      options.resourceScope,
+      outcome.kind === "completed"
+        ? { kind: "completed", digest: outcome.value.digest }
+        : outcome,
+      options.signal,
+    );
   }
   if (outcome.kind === "failed") throw outcome.cause;
   return outcome.value;
@@ -125,10 +160,12 @@ export const classifyAndHashRootForInventory = async (
 
 const classifyRootFormat = async (
   path: string,
-  handle: FileHandle,
+  source: RootInventorySource,
+  embeddedProbes: ArtifactEmbeddedFormatProbes,
   signal?: AbortSignal,
   asarHeaderAdmission?: AsarHeaderAdmission,
-): Promise<ArtifactOccurrence["artifact_format"]> => {
+): Promise<ArtifactOccurrence["artifact_format"] | NodeSeaAdmission> => {
+  const { handle } = source;
   const probe = createArtifactClassificationProbe(asarHeaderAdmission);
   const chunk = Buffer.alloc(64 * 1024);
   while (probe.length < probe.limit) {
@@ -176,8 +213,7 @@ const classifyRootFormat = async (
     (await hasDiskImageSignature(archiveBytes, read))
   )
     return "dmg";
-  if (await locateGodotPck(handle, archiveBytes, signal, evidence.prefix))
-    return "godot-pck";
+  if (await embeddedProbes.godotPck(evidence.prefix)) return "godot-pck";
   const fatEvidence = await readRootFatSliceHeaders(handle, evidence, signal);
   const mzWindowsHeaderSignature = await readRootMzWindowsHeaderSignature(
     handle,
@@ -203,20 +239,16 @@ const classifyRootFormat = async (
   )
     return zipRootPackageFormat(lower);
   if (["elf", "pe", "mach-o", "mach-o-universal"].includes(format)) {
-    const sea = await locateNodeSea(handle, archiveBytes, signal);
+    const sea = await embeddedProbes.nodeSea();
     abortIfNeeded(signal);
     if (sea !== undefined) {
-      await decodeNodeSeaBlob(
+      const decoded = await decodeNodeSeaBlob(
         await readNodeSeaBlob(handle, sea, archiveBytes, signal),
         signal,
       );
-      return "node-sea";
+      return { kind: "node-sea", source, location: sea, decoded };
     }
-    const packaged = await containsPyInstallerArchive(
-      handle,
-      archiveBytes,
-      signal,
-    );
+    const packaged = await embeddedProbes.pyInstaller();
     abortIfNeeded(signal);
     if (packaged) return "pyinstaller";
   }
