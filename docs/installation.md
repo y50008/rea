@@ -86,7 +86,7 @@ these checks do not lock out another writer modifying the same file in place,
 or exclude pathname changes between the final check and publication.
 Setup also retains valid environment overrides in REA's existing server entry,
 such as `REA_MCP_INPUT_SCHEMA_PROFILE`, `REA_MCP_OUTPUT_SCHEMA_PROFILE`, and
-`REA_MCP_MAX_RESPONSE_BYTES`.
+`REA_MCP_MAX_RESPONSE_BYTES`, and `REA_MCP_TOOL_FAMILIES`.
 Detected provider settings replace only matching environment keys.
 Setup manages REA's launcher, selected provider settings, and recommended timeout
 defaults. Codex approval policies, tool selections, and other caller-owned server
@@ -341,7 +341,7 @@ remove it with `claude mcp remove --scope local rea` from the same directory.
 To move it to a newer release, first back up the project entry in
 `~/.claude.json` and record its environment and other metadata. In particular,
 preserve caller-selected overrides such as `REA_MCP_INPUT_SCHEMA_PROFILE` and
-`REA_MCP_MAX_RESPONSE_BYTES`. Run `claude mcp remove --scope local rea` from the
+`REA_MCP_MAX_RESPONSE_BYTES`, and `REA_MCP_TOOL_FAMILIES`. Run `claude mcp remove --scope local rea` from the
 same directory, then recreate it with the platform-appropriate command above
 and the new version. Reapply every recorded environment value with Claude
 Code's `mcp add --env NAME=value` options and restore any other retained entry
@@ -494,6 +494,10 @@ on Windows, security software's protection history before attributing the cause.
 Do not rename `index.cjs` to `index.mjs` or disable protection to make startup pass.
 
 ### Update the owning installation
+
+Read-only metadata and version checks time out after 10 seconds. This does not
+interrupt a package installation already in progress. If a probe cannot be
+stopped, the updater reports a cleanup failure.
 
 `rea update` installs the exact resolved
 release into the npm prefix or Bun global directory that owns the running
