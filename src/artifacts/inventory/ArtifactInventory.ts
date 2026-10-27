@@ -1,4 +1,5 @@
-import { realpath } from "node:fs/promises";
+import { absoluteCallerPath } from "../../filesystem/callerPath.js";
+import { resolveArtifactSourcePath } from "../ArtifactSelectedSource.js";
 
 import {
   artifactInventoryResultSchema,
@@ -8,7 +9,7 @@ import { abortIfNeeded } from "../ArtifactHash.js";
 import {
   scanCanonicalArtifactInventoryInScope,
   scanCanonicalArtifactInventoryForExtractionInScope,
-  type TransferredZipInventorySource,
+  type TransferredArtifactInventorySource,
 } from "./scanCanonical.js";
 import type { ArtifactInventoryOptions } from "./types.js";
 import type { ArtifactInventorySnapshot } from "../../domain/artifactInventorySnapshot.js";
@@ -30,8 +31,13 @@ export const scanArtifactInventoryInScope = async (
   options: ArtifactInventoryOptions,
 ): Promise<ArtifactInventorySnapshot> => {
   abortIfNeeded(options.signal);
-  const path = await realpath(inputPath);
-  return scanCanonicalArtifactInventoryInScope(path, options);
+  const path = await resolveArtifactSourcePath(inputPath);
+  return scanCanonicalArtifactInventoryInScope(
+    path,
+    options,
+    undefined,
+    absoluteCallerPath(options.selectedPath ?? inputPath),
+  );
 };
 
 export const scanArtifactInventoryForExtractionInScope = async (
@@ -40,13 +46,14 @@ export const scanArtifactInventoryForExtractionInScope = async (
   probeFacts?: ArtifactEmbeddedFormatProbeFacts,
 ): Promise<{
   readonly snapshot: ArtifactInventorySnapshot;
-  readonly zipSource: TransferredZipInventorySource | undefined;
+  readonly transferredSource: TransferredArtifactInventorySource | undefined;
 }> => {
   abortIfNeeded(options.signal);
-  const path = await realpath(inputPath);
+  const path = await resolveArtifactSourcePath(inputPath);
   return scanCanonicalArtifactInventoryForExtractionInScope(
     path,
     options,
     probeFacts,
+    absoluteCallerPath(options.selectedPath ?? inputPath),
   );
 };

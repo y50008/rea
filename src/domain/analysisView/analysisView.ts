@@ -1,3 +1,9 @@
+import { analysisViewCoverageSchema } from "./analysisViewCoverage.js";
+import {
+  javaScriptRouteInventorySourceSchema,
+  javaScriptRouteInventorySchema,
+} from "../javascript/javascriptRouteInventory.js";
+import { nativeFunctionMatchingContextSchema } from "../native/functionMatching.js";
 import {
   nativeObservationViewRequestSchema,
   nativeContextViewRequestSchema,
@@ -58,7 +64,6 @@ import {
   javaScriptRoutesViewRequestSchema,
   javaScriptRoutesViewItemsSchema,
   javaScriptRoutesViewSummarySchema,
-  javaScriptRoutesSourceReferenceSchema,
   projectJavaScriptRoutesView,
 } from "./javascriptRoutesView.js";
 import {
@@ -69,7 +74,6 @@ import {
 } from "./webBundleView.js";
 import { webBundleAnalysisSchema } from "../webBundleAnalysis.js";
 import { recordedBrowserOriginSchema } from "../browserObservation.js";
-import { javaScriptRouteInventorySchema } from "../javascript/javascriptRouteInventory.js";
 import {
   sourceToBundleViewRequestSchema,
   sourceToBundleViewItemsSchema,
@@ -122,7 +126,6 @@ import {
   projectNativeFunctionMatchingView,
   nativeFunctionMatchingViewRequestSchema,
   nativeFunctionMatchingViewItemsSchema,
-  nativeFunctionMatchingViewContextSchema,
 } from "./nativeFunctionMatchingView.js";
 import {
   protobufViewRequestSchema,
@@ -193,7 +196,7 @@ import { bundleResourceRootSchema } from "../apple/bundleResourceRoot.js";
 import {
   functionDossierSchema,
   functionFacetAvailabilitySchema,
-} from "../hopperValues.js";
+} from "../native/functionDossier.js";
 import {
   artifactGraphManifestSchema,
   artifactInventoryCoverageSchema,
@@ -478,14 +481,6 @@ export const inspectAnalysisViewInputSchema = z.strictObject({
   view: analysisViewRequestSchema,
 });
 
-const coverageSchema = z.strictObject({
-  status: z.enum(["complete-within-view", "page", "empty"]),
-  examined: z.int().nonnegative(),
-  total: z.int().nonnegative(),
-  next_offset: z.int().nonnegative().nullable(),
-  exhausted: z.boolean(),
-});
-
 const artifactSchema = z.strictObject({
   path: z
     .string()
@@ -564,7 +559,7 @@ const viewResultBase = {
   parent_digest: digestSchema,
   view_digest: digestSchema,
   artifact: artifactSchema,
-  coverage: coverageSchema,
+  coverage: analysisViewCoverageSchema,
   limitations: z.array(z.string()),
   unknowns: z.array(z.string()),
 } as const;
@@ -885,7 +880,7 @@ export const javaScriptRoutesViewResultSchema = z.strictObject({
   inventory_capacity: javaScriptRouteInventorySchema.shape.capacity,
   capture_url: z.string().nullable(),
   items: javaScriptRoutesViewItemsSchema,
-  sources: z.array(javaScriptRoutesSourceReferenceSchema),
+  sources: z.array(javaScriptRouteInventorySourceSchema),
   summary: javaScriptRoutesViewSummarySchema.nullable(),
   byte_limited: z.boolean(),
 });
@@ -990,7 +985,7 @@ export const nativeFunctionMatchingSummaryViewResultSchema = z.strictObject({
   ...summaryViewResultBase,
   artifact: z.null(),
   parent_operation: z.literal("match_native_functions"),
-  summary: nativeFunctionMatchingViewContextSchema,
+  summary: nativeFunctionMatchingContextSchema,
 });
 
 /** Rows observed for one facet, or null when the provider declared that facet unavailable. */
@@ -1141,7 +1136,7 @@ export const analysisViewResultSchema = z.discriminatedUnion("kind", [
   sourceToBundlePageViewResultSchema,
   z.strictObject({
     ...viewResultBase,
-    ...nativeFunctionMatchingViewContextSchema.shape,
+    ...nativeFunctionMatchingContextSchema.shape,
     kind: z.literal("function-matches"),
     artifact: z.null(),
     view: nativeFunctionMatchingViewRequestSchema,
@@ -1430,14 +1425,6 @@ export type InspectAnalysisViewInput = z.output<
   typeof inspectAnalysisViewInputSchema
 >;
 export type AnalysisViewResult = z.output<typeof analysisViewResultSchema>;
-export type AnalysisViewCoverage = z.output<typeof coverageSchema>;
-
-export {
-  webBundleViewRequestSchema,
-  webBundleViewItemsSchema,
-  webBundleSummarySchema,
-  projectWebBundleView,
-};
 
 /** Parent record already resolved from inline Evidence or a session reference. */
 export interface AnalysisViewParent {

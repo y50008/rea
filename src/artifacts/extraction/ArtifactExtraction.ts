@@ -1,3 +1,11 @@
+import { assertAdmittedRootDigest } from "../inventory/classify.js";
+import { assertArtifactFileSelectedSource } from "../ArtifactFileSource.js";
+import {
+  assertArtifactSelectedSource,
+  resolveArtifactSourcePath,
+} from "../ArtifactSelectedSource.js";
+import { hashStableRootArtifactHandle } from "../inventory/hashStableRootArtifact.js";
+import { absoluteCallerPath } from "../../filesystem/callerPath.js";
 import type { AsarHeaderAdmission } from "../../config/asarHeaderAdmission.js";
 import {
   createArtifactReader,
@@ -48,13 +56,16 @@ import { AnalysisUnsupportedTargetError } from "../../domain/analysisErrorCore.j
 import type { BinaryTarget } from "../../domain/binaryTargetTypes.js";
 import type { ArtifactInventorySnapshot } from "../../domain/artifactInventorySnapshot.js";
 import { scanArtifactInventoryForExtractionInScope } from "../inventory/ArtifactInventory.js";
-import type { TransferredZipInventorySource } from "../inventory/scanCanonical.js";
+import type { TransferredArtifactInventorySource } from "../inventory/scanCanonical.js";
 import type { ArtifactIntegrityPolicyName } from "../../domain/artifactIntegrityPolicy.js";
 
 /** Local extraction input with the output root chosen by the adapter. */
 export interface ArtifactExtractionInput {
   readonly asarHeaderAdmission?: AsarHeaderAdmission;
   readonly inputPath: string;
+  readonly expectedRootSha256?: string | undefined;
+  /** Selected artifact spelling; packed I/O remains on inputPath. */
+  readonly selectedPath?: string | undefined;
   readonly inputFormat: BinaryTarget["format"];
   readonly outputRoot: string;
   readonly environment: Readonly<NodeJS.ProcessEnv>;
@@ -75,44 +86,48 @@ const extractArtifactInScope = async (
 ): Promise<ArtifactExtractionResult> => {
   // Cancellation wins over every later refusal, including unsupported formats.
   abortIfNeeded(signal);
-  const sourcePath = await realpath(input.inputPath);
+  const sourcePath = await resolveArtifactSourcePath(input.inputPath);
+  if (input.expectedRootSha256 !== undefined)
+    await assertArtifactSelectedSource(sourcePath, input.selectedPath);
   const admission = await requireExtractableFormat(sourcePath, input, signal);
-  const { snapshot, zipSource } =
+  const { snapshot, transferredSource } =
     await scanArtifactInventoryForExtractionInScope(
-      sourcePath,
+      input.inputPath,
       {
         resourceScope: input.resourceScope,
+        selectedPath: input.selectedPath,
+        expectedRootSha256: input.expectedRootSha256,
         signal,
         environment: input.environment,
         asarHeaderAdmission:
           input.asarHeaderAdmission ??
           resolveAsarHeaderAdmission(input.environment),
-        integrity: { mode: input.integrityPolicy },
+        integrity: input.integrityPolicy,
       },
       admission.probeFacts,
     );
-  const activeZipSource =
-    zipSource === undefined
+  const activeSource =
+    transferredSource === undefined
       ? undefined
-      : { ...zipSource, releaseAttempted: false };
+      : { ...transferredSource, releaseAttempted: false };
   try {
     return await materializeArtifactInventoryInScope(
       input,
       sourcePath,
       snapshot,
       signal,
-      activeZipSource,
+      activeSource,
       admission.probeFacts,
     );
   } catch (cause: unknown) {
-    if (activeZipSource !== undefined && cause instanceof ArtifactReaderFailure)
+    if (activeSource !== undefined && cause instanceof ArtifactReaderFailure)
       cause.retainPartialObservation({
         kind: "artifact-inventory",
         inventory: snapshot,
       });
-    const attempt = await releaseTransferredZipSource(
+    const attempt = await releaseTransferredArtifactSource(
       input.resourceScope,
-      activeZipSource,
+      activeSource,
     );
     if (attempt?.kind === "failed")
       throw input.resourceScope.cleanupFailure(
@@ -124,32 +139,33 @@ const extractArtifactInScope = async (
   }
 };
 
-interface ActiveZipInventorySource extends TransferredZipInventorySource {
+interface ActiveArtifactInventorySource extends TransferredArtifactInventorySource {
   releaseAttempted: boolean;
 }
 
-const releaseTransferredZipSource = async (
+const releaseTransferredArtifactSource = async (
   resourceScope: ArtifactResourceScope,
-  zipSource: ActiveZipInventorySource | undefined,
+  transferredSource: ActiveArtifactInventorySource | undefined,
 ): Promise<ArtifactCleanupAttempt | undefined> => {
-  if (zipSource === undefined || zipSource.releaseAttempted) return undefined;
-  zipSource.releaseAttempted = true;
-  return resourceScope.release(zipSource.owner);
+  if (transferredSource === undefined || transferredSource.releaseAttempted)
+    return undefined;
+  transferredSource.releaseAttempted = true;
+  return resourceScope.release(transferredSource.owner);
 };
 
-/** Materialize a scanned inventory, borrowing its active ZIP source when supplied. */
+/** Materialize a scanned inventory, borrowing its admitted source when supplied. */
 export const materializeArtifactInventoryInScope = async (
   input: ArtifactExtractionInput,
   sourcePath: string,
   snapshot: ArtifactInventorySnapshot,
   signal?: AbortSignal,
-  zipSource?: ActiveZipInventorySource,
+  transferredSource?: ActiveArtifactInventorySource,
   probeFacts?: ArtifactEmbeddedFormatProbeFacts,
 ): Promise<ArtifactExtractionResult> => {
   abortIfNeeded(signal);
   // A directory source must never acquire its own output as a new member on
   // the verification traversal. Resolve the selected parent before any write.
-  if (zipSource === undefined) {
+  if (transferredSource === undefined) {
     const canonicalSource = await realpath(sourcePath);
     if ((await lstat(canonicalSource)).isDirectory()) {
       const { canonicalOutput } = await SafeOutputTree.resolveDestination(
@@ -172,7 +188,7 @@ export const materializeArtifactInventoryInScope = async (
   )
     throw new AnalysisUnsupportedTargetError(
       "extract_artifact",
-      input.inputPath,
+      input.selectedPath ?? input.inputPath,
       `Godot PCK directory is ${containerMetadata.directory_status}; its complete contents cannot be extracted`,
     );
   const selectedOccurrences = snapshot.occurrences.filter(
@@ -214,7 +230,7 @@ export const materializeArtifactInventoryInScope = async (
     if (occurrence.encrypted)
       throw new AnalysisUnsupportedTargetError(
         "extract_artifact",
-        input.inputPath,
+        input.selectedPath ?? input.inputPath,
         `Archive entry ${occurrence.logical_path} is encrypted; REA does not decrypt archive entries, so the archive cannot be extracted completely`,
       );
     // Inventory retains unavailable source occurrences, but extraction cannot
@@ -260,7 +276,7 @@ export const materializeArtifactInventoryInScope = async (
     inventory: snapshot,
     selected,
     signal,
-    zipSource,
+    transferredSource,
     probeFacts,
   });
 };
@@ -284,7 +300,7 @@ const materializeSelection = async ({
   inventory,
   selected,
   signal,
-  zipSource,
+  transferredSource,
   probeFacts,
 }: {
   readonly input: ArtifactExtractionInput;
@@ -292,7 +308,7 @@ const materializeSelection = async ({
   readonly inventory: ArtifactInventorySnapshot;
   readonly selected: readonly SelectedOccurrence[];
   readonly signal: AbortSignal | undefined;
-  readonly zipSource: ActiveZipInventorySource | undefined;
+  readonly transferredSource: ActiveArtifactInventorySource | undefined;
   readonly probeFacts: ArtifactEmbeddedFormatProbeFacts | undefined;
 }): Promise<ArtifactExtractionResult> => {
   const byPath = new Map<string, SelectedOccurrence>();
@@ -305,12 +321,18 @@ const materializeSelection = async ({
       );
     byPath.set(path, item);
   }
+  if (transferredSource !== undefined && "kind" in transferredSource.admission)
+    await assertArtifactFileSelectedSource(
+      sourcePath,
+      transferredSource.admission.source,
+      "Artifact extraction",
+    );
   const reader = await createReader(
     sourcePath,
     input,
     inventory.manifest.root_format,
     signal,
-    zipSource,
+    transferredSource,
     probeFacts,
   );
   const readerOwner: ArtifactResourceOwner = {
@@ -351,9 +373,9 @@ const materializeSelection = async ({
         [closeAttempt],
         { kind: "artifact-inventory", inventory },
       );
-    const sourceClose = await releaseTransferredZipSource(
+    const sourceClose = await releaseTransferredArtifactSource(
       input.resourceScope,
-      zipSource,
+      transferredSource,
     );
     if (sourceClose?.kind === "failed")
       throw input.resourceScope.cleanupFailure(
@@ -361,7 +383,7 @@ const materializeSelection = async ({
         [sourceClose],
         { kind: "artifact-inventory", inventory },
       );
-    if (zipSource !== undefined) abortIfNeeded(signal);
+    if (transferredSource !== undefined) abortIfNeeded(signal);
     extracted.sort((left, right) =>
       compareUnicodeCodePoints(left.relative_path, right.relative_path),
     );
@@ -373,6 +395,8 @@ const materializeSelection = async ({
       traversal.snapshot(),
       reader.provenance(),
     );
+    if (input.expectedRootSha256 !== undefined)
+      await assertArtifactSelectedSource(sourcePath, input.selectedPath);
     await output.commit(signal);
     return completed;
   } catch (cause: unknown) {
@@ -546,7 +570,11 @@ const requireExtractableFormat = async (
   path: string,
   input: Pick<
     ArtifactExtractionInput,
-    "inputPath" | "inputFormat" | "resourceScope"
+    | "inputPath"
+    | "selectedPath"
+    | "inputFormat"
+    | "resourceScope"
+    | "expectedRootSha256"
   >,
   signal?: AbortSignal,
   previous?: ArtifactEmbeddedFormatProbeFacts,
@@ -586,14 +614,27 @@ const requireExtractableFormat = async (
           (await probes.godotPck()) !== undefined ||
           ((format === "elf" || format === "pe" || format === "mach-o") &&
             ((await probes.nodeSea()) !== undefined ||
-              (await probes.pyInstaller())));
+              (await probes.pyInstaller()) !== undefined));
+        if (pack && input.expectedRootSha256 !== undefined) {
+          const digest = await hashStableRootArtifactHandle(
+            path,
+            source.handle,
+            source.initial,
+            signal,
+          );
+          assertAdmittedRootDigest(
+            path,
+            input.expectedRootSha256,
+            digest.sha256,
+          );
+        }
         return { pack, probeFacts: probes.completedFacts() };
       },
     );
     if (!detected.pack)
       throw new AnalysisUnsupportedTargetError(
         "extract_artifact",
-        input.inputPath,
+        input.selectedPath ?? input.inputPath,
         `Artifact format has no extraction reader: ${format}`,
       );
     return { directory, probeFacts: detected.probeFacts };
@@ -606,6 +647,7 @@ const createReader = async (
   input: Pick<
     ArtifactExtractionInput,
     | "inputPath"
+    | "selectedPath"
     | "inputFormat"
     | "environment"
     | "resourceScope"
@@ -613,13 +655,12 @@ const createReader = async (
   >,
   containerFormat: ArtifactGraphManifest["root_format"],
   signal?: AbortSignal,
-  zipSource?: ActiveZipInventorySource,
+  transferredSource?: ActiveArtifactInventorySource,
   probeFacts?: ArtifactEmbeddedFormatProbeFacts,
 ): Promise<ArtifactReader> => {
-  const transferredZip =
-    zipSource !== undefined && isZipPackageFormat(containerFormat);
   let format: ArtifactReaderFormat;
-  if (transferredZip) format = containerFormat;
+  if (transferredSource !== undefined && isZipPackageFormat(containerFormat))
+    format = containerFormat;
   else if (
     containerFormat === "godot-pck" ||
     containerFormat === "pyinstaller" ||
@@ -639,7 +680,8 @@ const createReader = async (
   return createArtifactReader(path, format, {
     environment: input.environment,
     unreadableDirectories: "fail",
-    admission: transferredZip ? zipSource.source : undefined,
+    selectedPath: absoluteCallerPath(input.selectedPath ?? input.inputPath),
+    admission: transferredSource?.admission,
     asarHeaderAdmission:
       format === "asar"
         ? (input.asarHeaderAdmission ??
