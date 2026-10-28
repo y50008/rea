@@ -51,6 +51,15 @@ module page. See
 [JavaScript application workflows](javascript-application-workflows.md) for
 views, feature traces and comparisons that take the same saved Evidence.
 
+Add `--timings` to a command to write one JSON timing record to stderr. For
+example, `rea inspect-elf-notes program --json --timings > result.json` keeps
+stdout as a parseable result and writes
+`{"rea_timings":{"version":1,"command_ms":42}}` to stderr. `command_ms`
+measures CLI command dispatch and result delivery; it is not provider-only or
+analysis-only time. The flag is off by default, and the record omits stages
+that REA did not measure. Root version reporting does not dispatch a command
+and has no command timing record.
+
 ## JSON Lines record output
 
 Use `--format jsonl` to consume row-oriented results one record per line:
@@ -241,6 +250,17 @@ Formats 2, 3 and 4 retain header, directory and integrity facts. Compact deliver
 keeps complete Evidence in the requested bundle. See [Godot PCK](godot-pck.md)
 for embedded packs, batch queries and unknown encrypted coverage.
 
+Inspect a UnityFS AssetBundle without running Unity:
+
+```sh
+rea inspect-artifact content.bundle --detail summary --evidence_output evidence.json --json
+rea extract-artifact content.bundle --json
+```
+
+Format versions 6 through 8 retain header, block and directory facts with
+none/LZ4/LZ4HC block decompression. See [UnityFS](unityfs.md) for encryption
+and LZMA coverage boundaries.
+
 Inspect a Node.js SEA carrier without running it:
 
 ```sh
@@ -250,6 +270,26 @@ rea extract-artifact ./application --json
 
 See [Node.js SEA](node-sea.md) for supported layouts, script and asset paths,
 fuse observations, and the real-fixture verification lane.
+
+Inventory and extract Intel HEX or S-record regions:
+
+```sh
+rea inspect-artifact ./firmware.hex --json
+rea extract-artifact ./firmware.hex --json
+```
+
+See [Intel HEX and S-record images](hex-records.md) for recognition, region
+names, metadata and limits.
+
+Inspect and extract stored U-Boot legacy uImage payloads and components:
+
+```sh
+rea inspect-artifact ./firmware.bin --detail summary --evidence_output firmware.json --json
+rea extract-artifact ./firmware.bin --json
+```
+
+See [U-Boot uImage](uimage.md) for verified CRCs, physical component ranges,
+unknown names, resource limits and retained views. Compressed bytes stay stored.
 
 Inspect local model declarations without loading weights:
 
