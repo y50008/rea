@@ -165,6 +165,15 @@ into the current shell:
 eval "$(rea completions bash)"
 ```
 
+For zsh, initialize completion before loading the hook. If your shell already
+runs `compinit`, place the hook after that existing initialization:
+
+```zsh
+autoload -Uz compinit
+compinit
+eval "$(rea completions zsh)"
+```
+
 The Bash hook supports macOS system Bash 3.2. It uses optional completion
 features when the shell provides them and falls back to portable registration.
 Completion includes standard global options and the active command's options;
@@ -260,6 +269,17 @@ rea extract-artifact content.bundle --json
 Format versions 6 through 8 retain header, block and directory facts with
 none/LZ4/LZ4HC block decompression. See [UnityFS](unityfs.md) for encryption
 and LZMA coverage boundaries.
+
+Inspect an ESP32-family app or bootloader image without esptool:
+
+```sh
+rea inspect-artifact firmware.bin --json
+rea extract-artifact firmware.bin --json
+```
+
+The inventory lists each segment with its ESP-IDF load classification, the
+checksum and SHA-256 results, the descriptor and any Secure Boot v2 signature
+blocks. See [ESP images](esp-image.md) for recognition, coverage and refusals.
 
 Inspect a Node.js SEA carrier without running it:
 
